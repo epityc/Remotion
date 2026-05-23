@@ -34,39 +34,102 @@ export default function FacelessReelsPage() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
   const [progress, setProgress] = useState(0);
+  const [progressLabel, setProgressLabel] = useState('');
 
   const handleGenerate = async () => {
     setGenerating(true);
     setError(null);
     setProgress(0);
+    setProgressLabel('Generating voiceover...');
 
     try {
-      // Simulate progress steps
-      const steps = [
-        { label: 'Generating voiceover...', pct: 25 },
-        { label: 'Generating background visuals...', pct: 55 },
-        { label: 'Compositing reel...', pct: 80 },
-        { label: 'Finalizing...', pct: 95 },
-      ];
+      const apiKey = typeof window !== 'undefined'
+        ? (window.__MUAPI_KEY__ || localStorage.getItem('muapi_key'))
+        : null;
 
-      for (const s of steps) {
-        setProgress(s.pct);
-        await new Promise(r => setTimeout(r, 1200));
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      };
+
+      // Step 1: Text-to-Speech
+      setProgress(15);
+      const ttsRes = await fetch('/api/v1/text-to-speech', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: 'tts-1', input: script, voice }),
+      });
+
+      let audioUrl = null;
+      if (ttsRes.ok) {
+        const ttsData = await ttsRes.json();
+        audioUrl = ttsData.audio_url || ttsData.url || null;
       }
+      setProgress(35);
 
-      // In production this calls the real API
-      // For now simulate a result
+      // Step 2: Generate background video
+      setProgressLabel('Generating background visuals...');
+      const stylePrompts = {
+        cinematic: 'cinematic dark dramatic background video, no humans, slow motion',
+        nature: 'lush green nature outdoor scenery, calming, no humans',
+        tech: 'futuristic neon digital technology background, no humans',
+        minimal: 'clean minimal white abstract background, subtle motion',
+      };
+
+      const videoRes = await fetch('/api/v1/generate-video', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          prompt: stylePrompts[style] || stylePrompts.cinematic,
+          aspect_ratio: '9:16',
+          duration: 5,
+        }),
+      });
+
+      let videoUrl = null;
+      let requestId = null;
+
+      if (videoRes.ok) {
+        const videoData = await videoRes.json();
+        requestId = videoData.request_id || videoData.id || null;
+        videoUrl = videoData.video_url || videoData.url || null;
+      }
+      setProgress(55);
+
+      // Step 3: Poll for video result if we have a request_id
+      if (requestId && !videoUrl) {
+        setProgressLabel('Processing video...');
+        for (let i = 0; i < 20; i++) {
+          await new Promise(r => setTimeout(r, 3000));
+          const pollRes = await fetch(`/api/v1/predictions/${requestId}/result`, { headers });
+          if (pollRes.ok) {
+            const pollData = await pollRes.json();
+            if (pollData.status === 'completed' || pollData.status === 'succeeded') {
+              videoUrl = pollData.video_url || pollData.url || pollData.output?.[0] || null;
+              break;
+            }
+            if (pollData.status === 'failed') break;
+          }
+          setProgress(55 + Math.min(i * 2, 25));
+        }
+      }
+      setProgress(85);
+
+      setProgressLabel('Finalizing...');
+      await new Promise(r => setTimeout(r, 800));
       setProgress(100);
+
       setResult({
-        title: script.slice(0, 50) + (script.length > 50 ? '...' : ''),
-        duration: '0:47',
+        title: script.slice(0, 60) + (script.length > 60 ? '...' : ''),
+        duration: `~${Math.ceil(script.split(' ').length / 2.5)}s`,
         format: '9:16 • 1080×1920',
         style,
         voice,
-        previewUrl: null,
+        audioUrl,
+        videoUrl,
       });
     } catch (e) {
-      setError(e.message);
+      setError(e.message || 'Generation failed. Check your API key in Settings.');
     } finally {
       setGenerating(false);
     }
@@ -197,7 +260,7 @@ export default function FacelessReelsPage() {
                 <div style={{ maxWidth: 400, margin: '0 auto 16px', background: 'rgba(255,255,255,0.06)', borderRadius: 100, height: 8, overflow: 'hidden' }}>
                   <div style={{ height: '100%', background: 'linear-gradient(90deg, #a855f7, #ec4899)', borderRadius: 100, width: `${progress}%`, transition: 'width 0.8s ease' }} />
                 </div>
-                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>{progress}%</div>
+                <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)' }}>{progressLabel || 'Starting...'} — {progress}%</div>
               </div>
             )}
 
@@ -217,9 +280,26 @@ export default function FacelessReelsPage() {
                     ))}
                   </div>
                 </div>
+                {result.audioUrl && (
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 8 }}>Voiceover preview</div>
+                    <audio controls src={result.audioUrl} style={{ width: '100%', maxWidth: 400 }} />
+                  </div>
+                )}
+                {result.videoUrl && (
+                  <div style={{ marginBottom: 24 }}>
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.4)', marginBottom: 8 }}>Background video preview</div>
+                    <video controls src={result.videoUrl} style={{ width: '100%', maxWidth: 300, borderRadius: 12 }} />
+                  </div>
+                )}
                 <div style={{ display: 'flex', gap: 12, justifyContent: 'center' }}>
-                  <button style={{ padding: '12px 28px', borderRadius: 8, background: '#a855f7', color: 'white', fontWeight: 600, fontSize: 14, cursor: 'pointer', border: 'none' }}>⬇ Download Reel</button>
-                  <button onClick={() => { setStep(0); setResult(null); setScript(''); }} style={{ padding: '12px 20px', borderRadius: 8, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: 14 }}>Make another</button>
+                  {result.videoUrl && (
+                    <a href={result.videoUrl} download="kalivid-reel.mp4" style={{ padding: '12px 28px', borderRadius: 8, background: '#a855f7', color: 'white', fontWeight: 600, fontSize: 14, cursor: 'pointer', border: 'none', textDecoration: 'none' }}>⬇ Download Reel</a>
+                  )}
+                  {!result.videoUrl && (
+                    <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.4)', padding: '12px 0' }}>Video generation requires a valid MU API key. Set it in Settings.</div>
+                  )}
+                  <button onClick={() => { setStep(0); setResult(null); setScript(''); setProgress(0); }} style={{ padding: '12px 20px', borderRadius: 8, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.7)', border: '1px solid rgba(255,255,255,0.1)', cursor: 'pointer', fontSize: 14 }}>Make another</button>
                 </div>
               </div>
             )}
